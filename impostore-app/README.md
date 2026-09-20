@@ -19,6 +19,10 @@ npm run dev
 
 Apri l'app nel browser, inserisci la tua chiave API Anthropic (salvata solo in `localStorage`, mai inviata altrove) e inizia una partita.
 
+## Installazione su smartphone (PWA)
+
+L'app è una Progressive Web App: build (`npm run build && npm run preview`) o deploy su un host HTTPS, poi apri l'URL da telefono e scegli "Aggiungi a schermata Home" (Android/Chrome) o "Aggiungi a Home" dalla condivisione di Safari (iOS). Funziona anche offline dopo la prima visita grazie al service worker.
+
 ## Stack
 
-Vite + React + TypeScript + Tailwind CSS + Zustand + SDK Anthropic (chiamato direttamente dal browser per questo prototipo).
+Vite + React + TypeScript + Tailwind CSS + Zustand + SDK Anthropic (chiamato direttamente dal browser per questo prototipo) + vite-plugin-pwa (manifest + service worker).
