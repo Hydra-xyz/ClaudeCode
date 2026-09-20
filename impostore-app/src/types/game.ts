@@ -39,8 +39,3 @@ export interface RoundResult {
 }
 
 export type Winner = "crew" | "impostors" | null;
-
-export interface GameConfig {
-  apiKey: string;
-  categoryId: string | null;
-}

@@ -20,7 +20,7 @@ export default defineConfig({
         name: 'Impostore',
         short_name: 'Impostore',
         description:
-          'Party game: 1 giocatore contro 7 bot IA. 6 standard conoscono la parola, 2 impostori devono bluffare.',
+          'Party game: 1 giocatore contro 7 bot. 6 standard conoscono la parola, 2 impostori devono bluffare. Gioca offline, senza account.',
         lang: 'it',
         display: 'standalone',
         orientation: 'portrait',

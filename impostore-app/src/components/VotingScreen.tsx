@@ -11,26 +11,24 @@ export function VotingScreen() {
   const clues = allClues.filter((c) => c.round === round);
   const votes = allVotes.filter((v) => v.round === round);
   const isBotThinking = useGameStore((s) => s.isBotThinking);
-  const error = useGameStore((s) => s.error);
-  const runNextBotVote = useGameStore((s) => s.runNextBotVote);
+  const runBotVotesUntilDone = useGameStore((s) => s.runBotVotesUntilDone);
   const submitHumanVote = useGameStore((s) => s.submitHumanVote);
 
   const alive = players.filter((p) => p.alive);
   const humanPlayer = players.find((p) => p.isHuman)!;
   const humanVoted = !humanPlayer.alive || votes.some((v) => v.voterId === HUMAN_ID);
-  const inFlight = useRef(false);
+  const running = useRef(false);
 
   useEffect(() => {
-    const pendingBots = alive.filter(
-      (p) => !p.isHuman && !votes.some((v) => v.voterId === p.id),
-    );
-    if (pendingBots.length === 0 || inFlight.current) return;
-    inFlight.current = true;
-    runNextBotVote().finally(() => {
-      inFlight.current = false;
+    if (running.current) return;
+    running.current = true;
+    runBotVotesUntilDone().finally(() => {
+      running.current = false;
     });
+    // Runs once per voting phase (component remounts each round): the store
+    // action itself loops over every pending bot vote.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [votes.length, alive.length]);
+  }, [round]);
 
   const candidates = alive.filter((p) => p.id !== HUMAN_ID);
 
@@ -92,7 +90,6 @@ export function VotingScreen() {
         {humanPlayer.alive && !humanVoted && (
           <p className="text-muted text-sm">Scegli chi sospetti (non puoi votare te stesso).</p>
         )}
-        {error && <p className="text-impostor text-sm">{error}</p>}
       </div>
     </div>
   );

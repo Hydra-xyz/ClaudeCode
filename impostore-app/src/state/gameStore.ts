@@ -8,14 +8,8 @@ import type {
   Winner,
 } from "../types/game";
 import { BOT_IDENTITIES, HUMAN_IDENTITY } from "../data/bots";
-import { pickRandomWord, WORD_CATEGORIES, type WordCategory } from "../data/words";
-import {
-  generateBotVote,
-  generateCrewClue,
-  generateImpostorClue,
-  loadApiKey,
-  saveApiKey,
-} from "../lib/anthropic";
+import { pickRandomWord, WORD_CATEGORIES, type WordCategory, type WordEntry } from "../data/words";
+import { pickBotVoteTarget, pickCrewClue, pickImpostorClue, pickVoteReason } from "../lib/botLogic";
 
 const HUMAN_ID = "player-human";
 const TOTAL_PLAYERS = 8;
@@ -28,6 +22,10 @@ function shuffle<T>(arr: T[]): T[] {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createPlayers(): Player[] {
@@ -74,10 +72,10 @@ function computeTurnOrder(players: Player[]): string[] {
 
 interface GameState {
   phase: GamePhase;
-  apiKey: string;
   players: Player[];
   category: WordCategory | null;
   secretWord: string | null;
+  secretEntry: WordEntry | null;
   round: number;
   turnOrder: string[];
   currentTurnIndex: number;
@@ -86,15 +84,13 @@ interface GameState {
   roundResults: RoundResult[];
   winner: Winner;
   isBotThinking: boolean;
-  error: string | null;
 
-  setApiKey: (key: string) => void;
   startGame: (categoryId: string | null) => void;
   beginCluePhase: () => void;
   submitHumanClue: (text: string) => void;
-  runCurrentBotClue: () => Promise<void>;
+  advanceCluePhase: () => Promise<void>;
   submitHumanVote: (targetId: string) => void;
-  runNextBotVote: () => Promise<void>;
+  runBotVotesUntilDone: () => Promise<void>;
   tallyVotesIfReady: () => void;
   startNextRound: () => void;
   resetGame: () => void;
@@ -102,10 +98,10 @@ interface GameState {
 
 export const useGameStore = create<GameState>((set, get) => ({
   phase: "setup",
-  apiKey: loadApiKey(),
   players: [],
   category: null,
   secretWord: null,
+  secretEntry: null,
   round: 0,
   turnOrder: [],
   currentTurnIndex: 0,
@@ -114,20 +110,15 @@ export const useGameStore = create<GameState>((set, get) => ({
   roundResults: [],
   winner: null,
   isBotThinking: false,
-  error: null,
-
-  setApiKey: (key) => {
-    saveApiKey(key);
-    set({ apiKey: key });
-  },
 
   startGame: (categoryId) => {
     const players = createPlayers();
-    const { category, word } = pickRandomWord(categoryId);
+    const { category, entry } = pickRandomWord(categoryId);
     set({
       players,
       category,
-      secretWord: word,
+      secretWord: entry.word,
+      secretEntry: entry,
       phase: "reveal",
       round: 1,
       clues: [],
@@ -136,7 +127,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       winner: null,
       turnOrder: [],
       currentTurnIndex: 0,
-      error: null,
     });
   },
 
@@ -163,37 +153,28 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
 
-  runCurrentBotClue: async () => {
-    const state = get();
-    const { round, turnOrder, currentTurnIndex, players, apiKey, category, secretWord, clues } = state;
-    const playerId = turnOrder[currentTurnIndex];
-    const player = players.find((p) => p.id === playerId);
-    if (!player || player.isHuman) return;
+  // Processes consecutive bot turns in one continuous async loop (rather than
+  // being re-triggered per turn by a React effect) so that the synchronous
+  // state updates below can't cause a reentrant call to race past the guard
+  // that callers use to avoid overlapping invocations.
+  advanceCluePhase: async () => {
+    for (;;) {
+      const state = get();
+      if (state.phase !== "clues") return;
+      const { round, turnOrder, currentTurnIndex, players, category, secretEntry, clues } = state;
+      if (currentTurnIndex >= turnOrder.length) return;
+      const playerId = turnOrder[currentTurnIndex];
+      const player = players.find((p) => p.id === playerId);
+      if (!player || player.isHuman || !category || !secretEntry) return;
 
-    set({ isBotThinking: true });
-    const previousClues = clues
-      .filter((c) => c.round === round)
-      .map((c) => ({
-        playerName: players.find((p) => p.id === c.playerId)?.name ?? "?",
-        text: c.text,
-      }));
+      set({ isBotThinking: true });
+      await wait(450 + Math.random() * 650);
 
-    try {
+      const usedTexts = clues.filter((c) => c.round === round).map((c) => c.text);
       const text =
         player.role === "crew"
-          ? await generateCrewClue({
-              apiKey,
-              botName: player.name,
-              categoryLabel: category?.label ?? "",
-              previousClues,
-              word: secretWord ?? "",
-            })
-          : await generateImpostorClue({
-              apiKey,
-              botName: player.name,
-              categoryLabel: category?.label ?? "",
-              previousClues,
-            });
+          ? pickCrewClue(secretEntry, usedTexts)
+          : pickImpostorClue(category, secretEntry.word, usedTexts);
 
       const latest = get();
       const nextIndex = latest.currentTurnIndex + 1;
@@ -204,8 +185,6 @@ export const useGameStore = create<GameState>((set, get) => ({
         phase: nextIndex >= latest.turnOrder.length ? "voting" : latest.phase,
         votes: nextIndex >= latest.turnOrder.length ? [] : latest.votes,
       });
-    } catch {
-      set({ isBotThinking: false, error: "Errore nel contattare l'IA. Controlla la chiave API." });
     }
   },
 
@@ -216,41 +195,33 @@ export const useGameStore = create<GameState>((set, get) => ({
     get().tallyVotesIfReady();
   },
 
-  runNextBotVote: async () => {
-    const state = get();
-    const { round, players, apiKey, votes, clues } = state;
-    const alive = players.filter((p) => p.alive);
-    const nextBot = alive.find(
-      (p) => !p.isHuman && !votes.some((v) => v.voterId === p.id && v.round === round),
-    );
-    if (!nextBot) return;
+  // Same reasoning as advanceCluePhase: one continuous loop over all pending
+  // bot votes, called once per voting phase, instead of being re-triggered
+  // per vote from a React effect.
+  runBotVotesUntilDone: async () => {
+    for (;;) {
+      const state = get();
+      if (state.phase !== "voting") return;
+      const { round, players, votes } = state;
+      const alive = players.filter((p) => p.alive);
+      const nextBot = alive.find(
+        (p) => !p.isHuman && !votes.some((v) => v.voterId === p.id && v.round === round),
+      );
+      if (!nextBot) return;
 
-    set({ isBotThinking: true });
-    const cluesForRound = clues
-      .filter((c) => c.round === round)
-      .map((c) => ({
-        playerName: players.find((p) => p.id === c.playerId)?.name ?? "?",
-        text: c.text,
-      }));
-    const candidates = alive.filter((p) => p.id !== nextBot.id);
+      set({ isBotThinking: true });
+      await wait(350 + Math.random() * 550);
 
-    try {
-      const { targetName, reason } = await generateBotVote({
-        apiKey,
-        voterName: nextBot.name,
-        voterIsImpostor: nextBot.role === "impostor",
-        clues: cluesForRound,
-        candidateNames: candidates.map((p) => p.name),
-      });
-      const target = candidates.find((p) => p.name === targetName) ?? candidates[0];
+      const candidates = alive.filter((p) => p.id !== nextBot.id);
+      const targetId = pickBotVoteTarget(candidates.map((p) => p.id));
+      const reason = pickVoteReason();
+
       const latest = get();
       set({
-        votes: [...latest.votes, { round, voterId: nextBot.id, targetId: target.id, reason }],
+        votes: [...latest.votes, { round, voterId: nextBot.id, targetId, reason }],
         isBotThinking: false,
       });
       get().tallyVotesIfReady();
-    } catch {
-      set({ isBotThinking: false, error: "Errore nel contattare l'IA. Controlla la chiave API." });
     }
   },
 
@@ -323,6 +294,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       players: [],
       category: null,
       secretWord: null,
+      secretEntry: null,
       round: 0,
       turnOrder: [],
       currentTurnIndex: 0,
@@ -331,10 +303,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       roundResults: [],
       winner: null,
       isBotThinking: false,
-      error: null,
     });
   },
-
 }));
 
 export { HUMAN_ID, WORD_CATEGORIES };

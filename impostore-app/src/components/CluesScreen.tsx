@@ -12,23 +12,23 @@ export function CluesScreen() {
   const clues = allClues.filter((c) => c.round === round);
   const currentPlayer = players.find((p) => p.id === turnOrder[currentTurnIndex]) ?? null;
   const isBotThinking = useGameStore((s) => s.isBotThinking);
-  const error = useGameStore((s) => s.error);
-  const runCurrentBotClue = useGameStore((s) => s.runCurrentBotClue);
+  const advanceCluePhase = useGameStore((s) => s.advanceCluePhase);
   const submitHumanClue = useGameStore((s) => s.submitHumanClue);
   const humanPlayer = players.find((p) => p.isHuman)!;
   const secretWord = useGameStore((s) => s.secretWord);
   const category = useGameStore((s) => s.category);
 
   const [inputText, setInputText] = useState("");
-  const firedForIndex = useRef<number>(-1);
+  const running = useRef(false);
 
   useEffect(() => {
-    if (!currentPlayer) return;
-    if (currentPlayer.isHuman) return;
-    if (firedForIndex.current === currentTurnIndex) return;
-    firedForIndex.current = currentTurnIndex;
-    runCurrentBotClue();
-  }, [currentPlayer, currentTurnIndex, runCurrentBotClue]);
+    if (currentPlayer?.isHuman) return;
+    if (running.current) return;
+    running.current = true;
+    advanceCluePhase().finally(() => {
+      running.current = false;
+    });
+  }, [currentTurnIndex, currentPlayer, advanceCluePhase]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -85,8 +85,6 @@ export function CluesScreen() {
           </div>
         )}
       </div>
-
-      {error && <p className="text-impostor text-sm text-center mt-3">{error}</p>}
 
       <div className="mt-4">
         {currentPlayer?.isHuman ? (
